@@ -100,7 +100,11 @@ export default function HomePage() {
       const ata = getAssociatedTokenAddressSync(mintKeypair.publicKey, publicKey);
       const { blockhash: bh3, lastValidBlockHeight: lbh3 } =
         await connection.getLatestBlockhash();
-      const ataTx = new Transaction({ blockhash: bh3, lastValidBlockHeight: lbh3, feePayer: publicKey });
+      const ataTx = new Transaction({
+        blockhash: bh3,
+        lastValidBlockHeight: lbh3,
+        feePayer: publicKey,
+      });
       ataTx.add(
         createAssociatedTokenAccountInstruction(
           publicKey,

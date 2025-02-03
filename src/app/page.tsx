@@ -132,14 +132,8 @@ export default function HomePage() {
         Crea Token SPL (costo 0.20 SOL)
       </button>
       {status && <p style={{ marginTop: 10 }}>{status}</p>}
-      {mintAddress && (
-        <p>Mint Address: {mintAddress}</p>
-      )}
-      {tokenAccountAddress && (
-        <p>Token Account Address: {tokenAccountAddress}</p>
-      )}
+      {mintAddress && <p>Mint Address: {mintAddress}</p>}
+      {tokenAccountAddress && <p>Token Account Address: {tokenAccountAddress}</p>}
     </main>
   );
 }
-
-

@@ -1,3 +1,4 @@
+// page.tsx
 "use client";
 
 import React, { useCallback, useState } from "react";
@@ -7,17 +8,17 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import {
   createInitializeMintInstruction,
   createAssociatedTokenAccountInstruction,
+  createMintToInstruction,
   getAssociatedTokenAddressSync,
   TOKEN_PROGRAM_ID,
+  MINT_SIZE,
 } from "@solana/spl-token";
 
-// Import dinamico per evitare hydration error
 const WalletMultiButtonDynamic = dynamic(
   async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
   { ssr: false }
 );
 
-// Tuo indirizzo dove ricevi 0,20 SOL
 const FEE_RECIPIENT = new PublicKey("DmgYp2piRKfpKC1edWWCCqYGMhiSmiPy7nTVjZurre4y");
 
 export default function HomePage() {
@@ -27,85 +28,59 @@ export default function HomePage() {
   const [status, setStatus] = useState("");
   const [mintAddress, setMintAddress] = useState("");
   const [tokenAccountAddress, setTokenAccountAddress] = useState("");
+  const [tokenName, setTokenName] = useState("");
+  const [tokenSymbol, setTokenSymbol] = useState("");
+  const [decimals, setDecimals] = useState(9);
+  const [initialSupply, setInitialSupply] = useState("");
 
   const handleCreateTokenWithFee = useCallback(async () => {
     if (!publicKey) {
       setStatus("Collega prima il wallet!");
       return;
     }
+    if (!tokenName || !tokenSymbol || !initialSupply) {
+      setStatus("Compila tutti i campi del form!");
+      return;
+    }
+
     try {
       setStatus("Pagamento 0,20 SOL in corso...");
-      const lamports = 0.2 * 1_000_000_000;
-
-      // 1) Transazione per pagare la fee
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-      const feeTx = new Transaction({
-        blockhash,
-        lastValidBlockHeight,
-        feePayer: publicKey,
-      }).add(
+      
+      // 1. Pagamento fee
+      const feeTx = new Transaction().add(
         SystemProgram.transfer({
           fromPubkey: publicKey,
           toPubkey: FEE_RECIPIENT,
-          lamports,
+          lamports: 0.2 * 1e9,
         })
       );
       const feeSignature = await sendTransaction(feeTx, connection);
       await connection.confirmTransaction(feeSignature, "confirmed");
 
-      // 2) Creazione Mint
+      // 2. Creazione Mint
       setStatus("Creazione token SPL...");
       const mintKeypair = Keypair.generate();
+      const lamports = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
 
-      const rentExemption = await connection.getMinimumBalanceForRentExemption(82);
-      const { blockhash: bh2, lastValidBlockHeight: lbh2 } =
-        await connection.getLatestBlockhash();
-      const createMintTx = new Transaction({
-        blockhash: bh2,
-        lastValidBlockHeight: lbh2,
-        feePayer: publicKey,
-      });
-
-      createMintTx.add(
+      const createMintTx = new Transaction().add(
         SystemProgram.createAccount({
           fromPubkey: publicKey,
           newAccountPubkey: mintKeypair.publicKey,
-          lamports: rentExemption,
-          space: 82,
+          lamports,
+          space: MINT_SIZE,
           programId: TOKEN_PROGRAM_ID,
-        })
-      );
-      const decimals = 9;
-      createMintTx.add(
+        }),
         createInitializeMintInstruction(
           mintKeypair.publicKey,
           decimals,
-          publicKey, // mintAuthority
-          null,
-          TOKEN_PROGRAM_ID
+          publicKey,
+          publicKey
         )
       );
 
-      // Firma parziale con mintKeypair
-      createMintTx.sign(mintKeypair);
-
-      const createMintSig = await sendTransaction(createMintTx, connection, {
-        signers: [mintKeypair],
-      });
-      await connection.confirmTransaction(createMintSig, "confirmed");
-      setMintAddress(mintKeypair.publicKey.toBase58());
-
-      // 3) Creazione dell'ATA per l'utente
-      setStatus("Creazione account token associato...");
+      // 3. Creazione ATA
       const ata = getAssociatedTokenAddressSync(mintKeypair.publicKey, publicKey);
-      const { blockhash: bh3, lastValidBlockHeight: lbh3 } =
-        await connection.getLatestBlockhash();
-      const ataTx = new Transaction({
-        blockhash: bh3,
-        lastValidBlockHeight: lbh3,
-        feePayer: publicKey,
-      });
-      ataTx.add(
+      const createAtaTx = new Transaction().add(
         createAssociatedTokenAccountInstruction(
           publicKey,
           ata,
@@ -113,31 +88,115 @@ export default function HomePage() {
           mintKeypair.publicKey
         )
       );
-      const ataSig = await sendTransaction(ataTx, connection);
-      await connection.confirmTransaction(ataSig, "confirmed");
-      setTokenAccountAddress(ata.toBase58());
 
-      setStatus("Token SPL creato con successo!");
+      // 4. Minting supply iniziale
+      const mintAmount = BigInt(Number(initialSupply) * 10 ** decimals);
+      const mintTx = new Transaction().add(
+        createMintToInstruction(
+          mintKeypair.publicKey,
+          ata,
+          publicKey,
+          mintAmount
+        )
+      );
+
+      // Combina e invia tutte le transazioni
+      const combinedTx = new Transaction().add(
+        ...createMintTx.instructions,
+        ...createAtaTx.instructions,
+        ...mintTx.instructions
+      );
+
+      const signature = await sendTransaction(combinedTx, connection, {
+        signers: [mintKeypair],
+      });
+      await connection.confirmTransaction(signature, "confirmed");
+
+      setMintAddress(mintKeypair.publicKey.toBase58());
+      setTokenAccountAddress(ata.toBase58());
+      setStatus("Token creato con successo!");
+
     } catch (err) {
       console.error(err);
       setStatus("Errore: " + (err as Error).message);
     }
-  }, [connection, publicKey, sendTransaction]);
+  }, [connection, publicKey, sendTransaction, decimals, initialSupply, tokenName, tokenSymbol]);
 
   return (
-    <main style={{ padding: "24px" }}>
-      <h1>DApp SPL su Mainnet</h1>
-      <WalletMultiButtonDynamic />
-      <button
-        onClick={handleCreateTokenWithFee}
-        disabled={!publicKey}
-        style={{ marginLeft: 12, padding: "6px 12px" }}
-      >
-        Crea Token SPL (costo 0.20 SOL)
-      </button>
-      {status && <p style={{ marginTop: 10 }}>{status}</p>}
-      {mintAddress && <p>Mint Address: {mintAddress}</p>}
-      {tokenAccountAddress && <p>Token Account Address: {tokenAccountAddress}</p>}
+    <main className="p-6 max-w-2xl mx-auto">
+      <h1 className="text-3xl font-bold mb-6">Crea il tuo Token SPL</h1>
+      <div className="mb-4">
+        <WalletMultiButtonDynamic />
+      </div>
+
+      <form className="bg-gray-100 p-4 rounded-lg mb-6">
+        <div className="grid gap-4 mb-4">
+          <div>
+            <label className="block mb-2">Nome del Token</label>
+            <input
+              type="text"
+              className="w-full p-2 border rounded"
+              value={tokenName}
+              onChange={(e) => setTokenName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block mb-2">Simbolo</label>
+            <input
+              type="text"
+              className="w-full p-2 border rounded"
+              value={tokenSymbol}
+              onChange={(e) => setTokenSymbol(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block mb-2">Decimali</label>
+            <input
+              type="number"
+              className="w-full p-2 border rounded"
+              value={decimals}
+              onChange={(e) => setDecimals(Number(e.target.value))}
+              min="0"
+              max="9"
+            />
+          </div>
+          <div>
+            <label className="block mb-2">Supply Iniziale</label>
+            <input
+              type="number"
+              className="w-full p-2 border rounded"
+              value={initialSupply}
+              onChange={(e) => setInitialSupply(e.target.value)}
+              min="1"
+            />
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleCreateTokenWithFee}
+          disabled={!publicKey}
+          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:bg-gray-400"
+        >
+          Crea Token (0.20 SOL)
+        </button>
+      </form>
+
+      {status && <div className="p-4 bg-gray-100 rounded">{status}</div>}
+      
+      {mintAddress && (
+        <div className="mt-4 p-4 bg-green-100 rounded">
+          <p className="font-semibold">Mint Address:</p>
+          <p className="break-words">{mintAddress}</p>
+        </div>
+      )}
+
+      {tokenAccountAddress && (
+        <div className="mt-4 p-4 bg-green-100 rounded">
+          <p className="font-semibold">Token Account:</p>
+          <p className="break-words">{tokenAccountAddress}</p>
+        </div>
+      )}
     </main>
   );
 }
